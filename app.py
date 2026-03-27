@@ -27,6 +27,18 @@ channels = list(base_investment.keys())
 INCREMENTAL_CHANNELS = data.get("incremental_channels", {})
 OPTIMIZED_CHANNELS = set(data["s_curve_params"].keys())
 
+# Budget hierarchy groups (D2C vs IPA & Activation)
+D2C_CHANNELS = [ch for ch in ["D2C Reach", "D2C Rewards"] if ch in INCREMENTAL_CHANNELS]
+IPA_CHANNELS = [ch for ch in ["IPA - Strat Cities", "IPA", "IPA - TCE", "Sponsorships"] if ch in INCREMENTAL_CHANNELS]
+
+_D2C_DEFAULT  = sum(float(INCREMENTAL_CHANNELS[ch]["historical_spend"]) for ch in D2C_CHANNELS)
+# DOM order = layout order: D2C channels first, then IPA channels
+INC_DOM_ORDER = D2C_CHANNELS + IPA_CHANNELS
+_IPA_DEFAULT  = sum(float(INCREMENTAL_CHANNELS[ch]["historical_spend"]) for ch in IPA_CHANNELS)
+_MEDIA_DEFAULT = float(sum({k: float(v) for k, v in data["spends"].items()}.values()))
+_GRAND_TOTAL  = _D2C_DEFAULT + _IPA_DEFAULT + _MEDIA_DEFAULT
+
+
 
 # =================================================
 # Helpers
@@ -611,44 +623,70 @@ def channel_rows_optimize():
     for ch in channels:
         base = base_investment[ch]
         lb, ub = data["bounds_dict"][ch]
+        rev = compute_response_for_spend(ch, base)
+        roi = (rev / base) if base > 0 else 0.0
         rows.append(
             html.Tr(
                 [
                     html.Td(ch, style={"fontWeight": 700, "textAlign": "left", "verticalAlign": "middle"}),
                     html.Td(
-                        dbc.Switch(
-                            id={"type": "include", "ch": ch},
-                            value=True,
-                            className="table-toggle",
+                        html.Div(
+                            dbc.Switch(
+                                id={"type": "include", "ch": ch},
+                                value=True,
+                                className="table-toggle",
+                            ),
+                            style={"display": "flex", "justifyContent": "center", "alignItems": "center"},
                         ),
-                        className="table-center",
-                        style={"textAlign": "center", "verticalAlign": "middle"},
+                        style={"verticalAlign": "middle"},
                     ),
                     html.Td(
-                        dbc.Checkbox(
-                            id={"type": "lock", "ch": ch},
-                            value=False,
-                            className="table-checkbox",
+                        html.Div(
+                            dbc.Checkbox(
+                                id={"type": "lock", "ch": ch},
+                                value=False,
+                                className="table-checkbox",
+                            ),
+                            style={"display": "flex", "justifyContent": "center", "alignItems": "center"},
                         ),
-                        className="table-center",
-                        style={"textAlign": "center", "verticalAlign": "middle"},
+                        style={"verticalAlign": "middle"},
                     ),
                     html.Td(
-                        dcc.Input(
-                            type="text",
-                            value=format_currency(base),
-                            disabled=True,
-                            style={
-                                "width": "100%",
-                                "background": "transparent",
-                                "border": "none",
-                                "textAlign": "right",
-                                "fontWeight": "700",
-                                "color": NAVY_PRIMARY,
-                                "cursor": "default",
-                            },
-                        ),
+                        html.Div([
+                            dcc.Input(
+                                id={"type": "spend", "ch": ch},
+                                type="text",
+                                debounce=True,
+                                value=format_currency(base),
+                                style={"width": "100%", "textAlign": "right"},
+                            ),
+                            html.Div(
+                                f"Min: {fmt_money_short(base * (1 + lb / 100))}  Max: {fmt_money_short(base * (1 + ub / 100))}",
+                                id={"type": "minmax-display", "ch": ch},
+                                style={"fontSize": "11px", "color": "#64748B", "textAlign": "right", "marginTop": "3px"},
+                            ),
+                        ]),
                         style={"textAlign": "right", "verticalAlign": "middle"},
+                    ),
+                    html.Td(
+                        fmt_money_short(rev) if rev > 0 else "—",
+                        id={"type": "revenue", "ch": ch},
+                        style={
+                            "textAlign": "right", "verticalAlign": "middle",
+                            "fontVariantNumeric": "tabular-nums",
+                            "fontWeight": 700, "color": GREEN_POSITIVE,
+                            "whiteSpace": "nowrap",
+                            "background": "rgba(78,174,70,0.06)",
+                        },
+                    ),
+                    html.Td(
+                        f"{roi:.2f}" if roi > 0 else "—",
+                        id={"type": "roi", "ch": ch},
+                        style={
+                            "textAlign": "right", "verticalAlign": "middle",
+                            "fontVariantNumeric": "tabular-nums",
+                            "background": "rgba(78,174,70,0.06)",
+                        },
                     ),
                     html.Td(
                         dcc.Input(
@@ -670,195 +708,48 @@ def channel_rows_optimize():
                         ),
                         style={"textAlign": "center", "verticalAlign": "middle"},
                     ),
-                    html.Td(
-                        dcc.Input(
-                            id={"type": "min", "ch": ch},
-                            type="text",
-                            value=format_currency(base * (1 + lb / 100)),
-                            style={"width": "100%", "textAlign": "right"},
-                        ),
-                        style={"textAlign": "right", "verticalAlign": "middle"},
-                    ),
-                    html.Td(
-                        dcc.Input(
-                            id={"type": "max", "ch": ch},
-                            type="text",
-                            value=format_currency(base * (1 + ub / 100)),
-                            style={"width": "100%", "textAlign": "right"},
-                        ),
-                        style={"textAlign": "right", "verticalAlign": "middle"},
-                    ),
-
                 ]
             )
         )
     return rows
 
-def channel_rows_simulate():
-    rows = []
-
-    for ch in channels:
-        base = base_investment[ch]
-
-        rows.append(
-            html.Tr(
-                [
-                    html.Td(ch, style={"fontWeight": 700, "textAlign": "left", "verticalAlign": "middle"}),
-
-                    html.Td(
-                        dbc.Switch(
-                            id={"type": "sim-include", "ch": ch},
-                            value=True,
-                        ),
-                        className="table-center",
-                        style={"textAlign": "center", "verticalAlign": "middle"},
-                    ),
-
-                    html.Td(
-                        fmt_money_full(base),
-                        style={"textAlign": "right", "verticalAlign": "middle", "fontVariantNumeric": "tabular-nums"},
-                        id={"type": "sim-current", "ch": ch},
-                    ),
-
-                    html.Td(
-                        dcc.Slider(
-                            id={"type": "tilt", "ch": ch},
-                            min=-300,
-                            max=300,
-                            step=5,
-                            value=0,
-                            marks={
-                                -300: "-300%",
-                                -150: "-150%",
-                                0: "0%",
-                                150: "+150%",
-                                300: "+300%",
-                            },
-                            tooltip={"placement": "bottom", "always_visible": False},
-                        ),
-                        style={"width": "260px", "verticalAlign": "middle"},
-                    ),
-
-                    html.Td(
-                        fmt_money_full(base),
-                        style={"fontWeight": 700, "textAlign": "right", "verticalAlign": "middle", "fontVariantNumeric": "tabular-nums"},
-                        id={"type": "sim-new", "ch": ch},
-                    ),
-
-                    html.Td(
-                        "$0",
-                        style={"textAlign": "right", "verticalAlign": "middle", "fontVariantNumeric": "tabular-nums"},
-                        id={"type": "sim-delta", "ch": ch},
-                    ),
-                ]
-            )
-        )
-
-    return rows
-
-@app.callback(
-    Output({"type": "sim-new", "ch": ALL}, "children"),
-    Output({"type": "sim-delta", "ch": ALL}, "children"),
-    Input({"type": "tilt", "ch": ALL}, "value"),
-    Input({"type": "sim-include", "ch": ALL}, "value"),
-    State("run-mode", "value"),
-)
-def update_simulation_values(tilts, includes, run_mode):
-
-    if run_mode != "simulate":
-        raise PreventUpdate
-
-    if tilts is None or includes is None:
-        raise PreventUpdate
-
-
-    new_vals = []
-    delta_vals = []
-
-    for ch, tilt, include in zip(channels, tilts, includes):
-        base = base_investment[ch]
-
-        if not include:
-            new_vals.append(fmt_money_full(base))
-            delta_vals.append("$0")
-            continue
-
-        pct = float(tilt or 0)
-        new_spend = base * (1 + pct / 100)
-        delta = new_spend - base
-
-        new_vals.append(fmt_money_full(new_spend))
-        delta_vals.append(
-            f"{'+' if delta >= 0 else ''}{fmt_money_full(delta)}"
-        )
-
-    return new_vals, delta_vals
 
 
 
 def incremental_channel_rows():
+    """Build inc-channel rows with historical_spend pre-populated (still used for DOM IDs)."""
     rows = []
-
     for ch in INCREMENTAL_CHANNELS.keys():
+        hist_spend = float(INCREMENTAL_CHANNELS[ch].get("historical_spend", 0))
         rows.append(
-            html.Tr(
-                [
-                    # Channel
-                    html.Td(
-                        ch,
-                        style={
-                            "fontWeight": 600,
-                            "textAlign": "left",
-                            "verticalAlign": "middle",
-                            "width": "45%",
-                        },
+            html.Tr([
+                html.Td(ch, style={"fontWeight": 600, "textAlign": "left", "verticalAlign": "middle"}),
+                html.Td(
+                    html.Div(
+                        dbc.Switch(id={"type": "inc-include", "ch": ch}, value=True),
+                        style={"display": "flex", "justifyContent": "center", "alignItems": "center"},
                     ),
-
-                    # Include toggle
-                    html.Td(
-                        html.Div(
-                            dbc.Switch(
-                                id={"type": "inc-include", "ch": ch},
-                                value=False,
-                            ),
-                            style={
-                                "display": "flex",
-                                "justifyContent": "center",
-                                "alignItems": "center",
-                            },
-                        ),
-                        style={
-                            "textAlign": "center",
-                            "verticalAlign": "middle",
-                            "width": "15%",
-                        },
+                    style={"textAlign": "center", "verticalAlign": "middle"},
+                ),
+                html.Td(
+                    dcc.Input(
+                        id={"type": "inc-spend", "ch": ch},
+                        type="text",
+                        debounce=True,
+                        value=format_currency(hist_spend),
+                        style={"width": "140px", "textAlign": "right"},
                     ),
-
-
-                    # Scenario Investment
-                    html.Td(
-                        dcc.Input(
-                            id={"type": "inc-spend", "ch": ch},
-                            type="number",
-                            placeholder="Enter spend",
-                            step=1000,
-                            disabled=True,
-                            style={
-                                "width": "160px",
-                                "textAlign": "right",
-                            },
-                        ),
-                        style={
-                            "textAlign": "right",
-                            "verticalAlign": "middle",
-                            "width": "40%",
-                        },
-                    ),
-                ]
-            )
+                    style={"textAlign": "right", "verticalAlign": "middle"},
+                ),
+                html.Td(
+                    "",
+                    id={"type": "budget-pct-inc", "ch": ch},
+                    style={"textAlign": "right", "verticalAlign": "middle", "fontSize": "12px", "color": "#64748B"},
+                ),
+            ])
         )
-
     return rows
+
 
 
 
@@ -872,6 +763,14 @@ def response_annual_from_params(params, annual_spend):
         / (params["theta"] ** params["alpha"] + x_weekly ** params["alpha"] + 1e-8)
     )
     return y_weekly * 52.0
+
+
+def compute_response_for_spend(ch, annual_spend):
+    """Compute annual revenue for a channel at a given spend using its hill curve."""
+    if ch not in data["s_curve_params"]:
+        return 0.0
+    params = data["s_curve_params"][ch]
+    return response_annual_from_params(params, float(annual_spend))
 
 
 def marginal_roas_10pct(channel, annual_spend, s_curve_params):
@@ -1088,7 +987,7 @@ app.layout = html.Div(
         html.Div(
             className="section",
             children=[
-                html.Div("1. MODE & OPTIMIZATION OBJECTIVE", className="section-title"),
+                html.Div("1. OPTIMIZATION OBJECTIVE", className="section-title"),
                 html.Div(
                     "Define what you want the model to do before entering budgets or scenarios.",
                     className="comment",
@@ -1096,24 +995,6 @@ app.layout = html.Div(
 
                 dbc.Row(
                     [
-                        dbc.Col(
-                            [
-                                html.Label(
-                                    "Run Mode",
-                                    style={"fontSize": "12px", "fontWeight": 700},
-                                ),
-                                dbc.RadioItems(
-                                    id="run-mode",
-                                    options=[
-                                        {"label": "Optimize", "value": "optimize"},
-                                        {"label": "Simulate", "value": "simulate"},
-                                    ],
-                                    value="optimize",
-                                    inline=True,
-                                ),
-                            ],
-                            md=6,
-                        ),
                         dbc.Col(
                             [
                                 html.Label(
@@ -1145,61 +1026,375 @@ app.layout = html.Div(
             className="section",
             children=[
                 html.Div("2. TOTAL MARKETING BUDGET & SCENARIOS", className="section-title"),
+                html.Div(id="budget-section-description", className="comment"),
+
+                # ---------- HIERARCHICAL BUDGET TABLE ----------
+                html.Div([
+                    dbc.Table(
+                        [
+                            html.Thead(
+                                html.Tr([
+                                    html.Th("Category / Channel", style={"textAlign":"left",   "fontSize":"12px"}),
+                                    html.Th("Include",            style={"textAlign":"center", "fontSize":"12px"}),
+                                    html.Th("Current Budget ($)", style={"textAlign":"right",  "fontSize":"12px","whiteSpace":"nowrap"}),
+                                    html.Th("New Budget ($)",     style={"textAlign":"right",  "fontSize":"12px","whiteSpace":"nowrap"}),
+                                    html.Th("Δ (%)",          style={"textAlign":"right",  "fontSize":"12px","whiteSpace":"nowrap"}),
+                                    html.Th("% of Total",         style={"textAlign":"right",  "fontSize":"12px","whiteSpace":"nowrap"}),
+                                    html.Th("Revenue ($)",        style={"textAlign":"right",  "fontSize":"12px","color":"#4EAE46","whiteSpace":"nowrap"}),
+                                    html.Th("ROI",                style={"textAlign":"right",  "fontSize":"12px","color":"#4EAE46"}),
+                                ])
+                            ),
+                            html.Tbody(
+                                # D2C category header row
+                                [
+                                    html.Tr([
+                                        html.Td(html.Strong("D2C"), style={"textAlign":"left","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td("",                  style={"textAlign":"center","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td(html.Span(format_currency(_D2C_DEFAULT), style={"fontWeight":700,"fontSize":"13px","color":"#64748B"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td(html.Span(format_currency(_D2C_DEFAULT), id="budget-d2c-display", style={"fontWeight":700,"fontSize":"13px"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td(html.Span("0.0%", id="budget-d2c-delta", style={"fontWeight":700,"fontSize":"12px","color":"#64748B"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td(html.Span("", id="budget-pct-d2c", style={"fontSize":"12px","color":"#64748B"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td(html.Span("", id="budget-d2c-revenue", style={"fontWeight":700,"fontSize":"13px","color":"#4EAE46"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td(html.Span("", id="budget-d2c-roi", style={"fontWeight":700,"fontSize":"13px","color":"#4EAE46"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                    ]),
+                                ] + [
+                                    html.Tr([
+                                        html.Td(html.Span("D2C Reach", style={"paddingLeft":"20px","fontSize":"13px"}),
+                                                style={"textAlign":"left","verticalAlign":"middle"}),
+                                        html.Td(
+                                            html.Div(dbc.Switch(id={"type":"inc-include","ch":"D2C Reach"}, value=True),
+                                                     style={"display":"flex","justifyContent":"center","alignItems":"center"}),
+                                            style={"textAlign":"center","verticalAlign":"middle"},
+                                        ),
+                                        html.Td(html.Span(format_currency(float(INCREMENTAL_CHANNELS["D2C Reach"]["historical_spend"])),
+                                                          style={"fontSize":"12px","color":"#64748B","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle"}),
+                                        html.Td(
+                                            html.Div([
+                                        html.Button("−", id={"type":"inc-minus","ch":"D2C Reach"}, n_clicks=0, style={"width":"22px","height":"28px","flexShrink":0,"border":"1px solid #ced4da","borderRight":"none","borderRadius":"4px 0 0 4px","background":"#f8f9fa","cursor":"pointer","fontSize":"14px","lineHeight":"1","padding":"0"}),
+                                                dcc.Input(id={"type":"inc-spend","ch":"D2C Reach"}, type="text", debounce=True,
+                                                          value=format_currency(float(INCREMENTAL_CHANNELS["D2C Reach"]["historical_spend"])),
+                                                          style={"flex":"1","textAlign":"right","minWidth":"80px",
+                                                                 "border":"1px solid #ced4da","borderRadius":"0",
+                                                                 "height":"28px","padding":"0 4px","fontSize":"12px"}),
+                                        html.Button("+", id={"type":"inc-plus","ch":"D2C Reach"}, n_clicks=0, style={"width":"22px","height":"28px","flexShrink":0,"border":"1px solid #ced4da","borderLeft":"none","borderRadius":"0 4px 4px 0","background":"#f8f9fa","cursor":"pointer","fontSize":"14px","lineHeight":"1","padding":"0"}),
+                                            ], style={"display":"flex","alignItems":"center"}),
+                                            style={"textAlign":"right","verticalAlign":"middle"},
+                                        ),
+                                        html.Td(html.Span("0.0%", id={"type":"inc-delta","ch":"D2C Reach"},
+                                                          style={"fontWeight":700,"fontSize":"12px","color":"#64748B","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle"}),
+                                        html.Td(html.Span("", id={"type":"budget-pct-inc","ch":"D2C Reach"}, style={"fontSize":"12px","color":"#64748B"}),
+                                                style={"textAlign":"right","verticalAlign":"middle"}),
+                                        html.Td(html.Span("", id={"type":"inc-revenue","ch":"D2C Reach"},
+                                                          style={"fontWeight":700,"color":"#4EAE46","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(78,174,70,0.06)"}),
+                                        html.Td(html.Span("", id={"type":"inc-roi","ch":"D2C Reach"},
+                                                          style={"color":"#4EAE46","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(78,174,70,0.06)"}),
+                                    ]),
+                                    html.Tr([
+                                        html.Td(html.Span("D2C Rewards", style={"paddingLeft":"20px","fontSize":"13px"}),
+                                                style={"textAlign":"left","verticalAlign":"middle"}),
+                                        html.Td(
+                                            html.Div(dbc.Switch(id={"type":"inc-include","ch":"D2C Rewards"}, value=True),
+                                                     style={"display":"flex","justifyContent":"center","alignItems":"center"}),
+                                            style={"textAlign":"center","verticalAlign":"middle"},
+                                        ),
+                                        html.Td(html.Span(format_currency(float(INCREMENTAL_CHANNELS["D2C Rewards"]["historical_spend"])),
+                                                          style={"fontSize":"12px","color":"#64748B","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle"}),
+                                        html.Td(
+                                            html.Div([
+                                        html.Button("−", id={"type":"inc-minus","ch":"D2C Rewards"}, n_clicks=0, style={"width":"22px","height":"28px","flexShrink":0,"border":"1px solid #ced4da","borderRight":"none","borderRadius":"4px 0 0 4px","background":"#f8f9fa","cursor":"pointer","fontSize":"14px","lineHeight":"1","padding":"0"}),
+                                                dcc.Input(id={"type":"inc-spend","ch":"D2C Rewards"}, type="text", debounce=True,
+                                                          value=format_currency(float(INCREMENTAL_CHANNELS["D2C Rewards"]["historical_spend"])),
+                                                          style={"flex":"1","textAlign":"right","minWidth":"80px",
+                                                                 "border":"1px solid #ced4da","borderRadius":"0",
+                                                                 "height":"28px","padding":"0 4px","fontSize":"12px"}),
+                                        html.Button("+", id={"type":"inc-plus","ch":"D2C Rewards"}, n_clicks=0, style={"width":"22px","height":"28px","flexShrink":0,"border":"1px solid #ced4da","borderLeft":"none","borderRadius":"0 4px 4px 0","background":"#f8f9fa","cursor":"pointer","fontSize":"14px","lineHeight":"1","padding":"0"}),
+                                            ], style={"display":"flex","alignItems":"center"}),
+                                            style={"textAlign":"right","verticalAlign":"middle"},
+                                        ),
+                                        html.Td(html.Span("0.0%", id={"type":"inc-delta","ch":"D2C Rewards"},
+                                                          style={"fontWeight":700,"fontSize":"12px","color":"#64748B","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle"}),
+                                        html.Td(html.Span("", id={"type":"budget-pct-inc","ch":"D2C Rewards"}, style={"fontSize":"12px","color":"#64748B"}),
+                                                style={"textAlign":"right","verticalAlign":"middle"}),
+                                        html.Td(html.Span("", id={"type":"inc-revenue","ch":"D2C Rewards"},
+                                                          style={"fontWeight":700,"color":"#4EAE46","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(78,174,70,0.06)"}),
+                                        html.Td(html.Span("", id={"type":"inc-roi","ch":"D2C Rewards"},
+                                                          style={"color":"#4EAE46","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(78,174,70,0.06)"}),
+                                    ]),
+                                ] +
+                                # IPA & Activation category header row
+                                [
+                                    html.Tr([
+                                        html.Td(html.Strong("IPA & Activation"), style={"textAlign":"left","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td("",                               style={"textAlign":"center","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td(html.Span(format_currency(_IPA_DEFAULT), style={"fontWeight":700,"fontSize":"13px","color":"#64748B"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td(html.Span(format_currency(_IPA_DEFAULT), id="budget-ipa-display", style={"fontWeight":700,"fontSize":"13px"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td(html.Span("0.0%", id="budget-ipa-delta", style={"fontWeight":700,"fontSize":"12px","color":"#64748B"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td(html.Span("", id="budget-pct-ipa", style={"fontSize":"12px","color":"#64748B"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td(html.Span("", id="budget-ipa-revenue", style={"fontWeight":700,"fontSize":"13px","color":"#4EAE46"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td(html.Span("", id="budget-ipa-roi", style={"fontWeight":700,"fontSize":"13px","color":"#4EAE46"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                    ]),
+                                ] + [
+                                    html.Tr([
+                                        html.Td(html.Span("IPA - Strat Cities", style={"paddingLeft":"20px","fontSize":"13px"}),
+                                                style={"textAlign":"left","verticalAlign":"middle"}),
+                                        html.Td(
+                                            html.Div(dbc.Switch(id={"type":"inc-include","ch":"IPA - Strat Cities"}, value=True),
+                                                     style={"display":"flex","justifyContent":"center","alignItems":"center"}),
+                                            style={"textAlign":"center","verticalAlign":"middle"},
+                                        ),
+                                        html.Td(html.Span(format_currency(float(INCREMENTAL_CHANNELS["IPA - Strat Cities"]["historical_spend"])),
+                                                          style={"fontSize":"12px","color":"#64748B","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle"}),
+                                        html.Td(
+                                            html.Div([
+                                        html.Button("−", id={"type":"inc-minus","ch":"IPA - Strat Cities"}, n_clicks=0, style={"width":"22px","height":"28px","flexShrink":0,"border":"1px solid #ced4da","borderRight":"none","borderRadius":"4px 0 0 4px","background":"#f8f9fa","cursor":"pointer","fontSize":"14px","lineHeight":"1","padding":"0"}),
+                                                dcc.Input(id={"type":"inc-spend","ch":"IPA - Strat Cities"}, type="text", debounce=True,
+                                                          value=format_currency(float(INCREMENTAL_CHANNELS["IPA - Strat Cities"]["historical_spend"])),
+                                                          style={"flex":"1","textAlign":"right","minWidth":"80px",
+                                                                 "border":"1px solid #ced4da","borderRadius":"0",
+                                                                 "height":"28px","padding":"0 4px","fontSize":"12px"}),
+                                        html.Button("+", id={"type":"inc-plus","ch":"IPA - Strat Cities"}, n_clicks=0, style={"width":"22px","height":"28px","flexShrink":0,"border":"1px solid #ced4da","borderLeft":"none","borderRadius":"0 4px 4px 0","background":"#f8f9fa","cursor":"pointer","fontSize":"14px","lineHeight":"1","padding":"0"}),
+                                            ], style={"display":"flex","alignItems":"center"}),
+                                            style={"textAlign":"right","verticalAlign":"middle"},
+                                        ),
+                                        html.Td(html.Span("0.0%", id={"type":"inc-delta","ch":"IPA - Strat Cities"},
+                                                          style={"fontWeight":700,"fontSize":"12px","color":"#64748B","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle"}),
+                                        html.Td(html.Span("", id={"type":"budget-pct-inc","ch":"IPA - Strat Cities"}, style={"fontSize":"12px","color":"#64748B"}),
+                                                style={"textAlign":"right","verticalAlign":"middle"}),
+                                        html.Td(html.Span("", id={"type":"inc-revenue","ch":"IPA - Strat Cities"},
+                                                          style={"fontWeight":700,"color":"#4EAE46","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(78,174,70,0.06)"}),
+                                        html.Td(html.Span("", id={"type":"inc-roi","ch":"IPA - Strat Cities"},
+                                                          style={"color":"#4EAE46","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(78,174,70,0.06)"}),
+                                    ]),
+                                    html.Tr([
+                                        html.Td(html.Span("IPA", style={"paddingLeft":"20px","fontSize":"13px"}),
+                                                style={"textAlign":"left","verticalAlign":"middle"}),
+                                        html.Td(
+                                            html.Div(dbc.Switch(id={"type":"inc-include","ch":"IPA"}, value=True),
+                                                     style={"display":"flex","justifyContent":"center","alignItems":"center"}),
+                                            style={"textAlign":"center","verticalAlign":"middle"},
+                                        ),
+                                        html.Td(html.Span(format_currency(float(INCREMENTAL_CHANNELS["IPA"]["historical_spend"])),
+                                                          style={"fontSize":"12px","color":"#64748B","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle"}),
+                                        html.Td(
+                                            html.Div([
+                                        html.Button("−", id={"type":"inc-minus","ch":"IPA"}, n_clicks=0, style={"width":"22px","height":"28px","flexShrink":0,"border":"1px solid #ced4da","borderRight":"none","borderRadius":"4px 0 0 4px","background":"#f8f9fa","cursor":"pointer","fontSize":"14px","lineHeight":"1","padding":"0"}),
+                                                dcc.Input(id={"type":"inc-spend","ch":"IPA"}, type="text", debounce=True,
+                                                          value=format_currency(float(INCREMENTAL_CHANNELS["IPA"]["historical_spend"])),
+                                                          style={"flex":"1","textAlign":"right","minWidth":"80px",
+                                                                 "border":"1px solid #ced4da","borderRadius":"0",
+                                                                 "height":"28px","padding":"0 4px","fontSize":"12px"}),
+                                        html.Button("+", id={"type":"inc-plus","ch":"IPA"}, n_clicks=0, style={"width":"22px","height":"28px","flexShrink":0,"border":"1px solid #ced4da","borderLeft":"none","borderRadius":"0 4px 4px 0","background":"#f8f9fa","cursor":"pointer","fontSize":"14px","lineHeight":"1","padding":"0"}),
+                                            ], style={"display":"flex","alignItems":"center"}),
+                                            style={"textAlign":"right","verticalAlign":"middle"},
+                                        ),
+                                        html.Td(html.Span("0.0%", id={"type":"inc-delta","ch":"IPA"},
+                                                          style={"fontWeight":700,"fontSize":"12px","color":"#64748B","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle"}),
+                                        html.Td(html.Span("", id={"type":"budget-pct-inc","ch":"IPA"}, style={"fontSize":"12px","color":"#64748B"}),
+                                                style={"textAlign":"right","verticalAlign":"middle"}),
+                                        html.Td(html.Span("", id={"type":"inc-revenue","ch":"IPA"},
+                                                          style={"fontWeight":700,"color":"#4EAE46","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(78,174,70,0.06)"}),
+                                        html.Td(html.Span("", id={"type":"inc-roi","ch":"IPA"},
+                                                          style={"color":"#4EAE46","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(78,174,70,0.06)"}),
+                                    ]),
+                                    html.Tr([
+                                        html.Td(html.Span("IPA - TCE", style={"paddingLeft":"20px","fontSize":"13px"}),
+                                                style={"textAlign":"left","verticalAlign":"middle"}),
+                                        html.Td(
+                                            html.Div(dbc.Switch(id={"type":"inc-include","ch":"IPA - TCE"}, value=True),
+                                                     style={"display":"flex","justifyContent":"center","alignItems":"center"}),
+                                            style={"textAlign":"center","verticalAlign":"middle"},
+                                        ),
+                                        html.Td(html.Span(format_currency(float(INCREMENTAL_CHANNELS["IPA - TCE"]["historical_spend"])),
+                                                          style={"fontSize":"12px","color":"#64748B","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle"}),
+                                        html.Td(
+                                            html.Div([
+                                        html.Button("−", id={"type":"inc-minus","ch":"IPA - TCE"}, n_clicks=0, style={"width":"22px","height":"28px","flexShrink":0,"border":"1px solid #ced4da","borderRight":"none","borderRadius":"4px 0 0 4px","background":"#f8f9fa","cursor":"pointer","fontSize":"14px","lineHeight":"1","padding":"0"}),
+                                                dcc.Input(id={"type":"inc-spend","ch":"IPA - TCE"}, type="text", debounce=True,
+                                                          value=format_currency(float(INCREMENTAL_CHANNELS["IPA - TCE"]["historical_spend"])),
+                                                          style={"flex":"1","textAlign":"right","minWidth":"80px",
+                                                                 "border":"1px solid #ced4da","borderRadius":"0",
+                                                                 "height":"28px","padding":"0 4px","fontSize":"12px"}),
+                                        html.Button("+", id={"type":"inc-plus","ch":"IPA - TCE"}, n_clicks=0, style={"width":"22px","height":"28px","flexShrink":0,"border":"1px solid #ced4da","borderLeft":"none","borderRadius":"0 4px 4px 0","background":"#f8f9fa","cursor":"pointer","fontSize":"14px","lineHeight":"1","padding":"0"}),
+                                            ], style={"display":"flex","alignItems":"center"}),
+                                            style={"textAlign":"right","verticalAlign":"middle"},
+                                        ),
+                                        html.Td(html.Span("0.0%", id={"type":"inc-delta","ch":"IPA - TCE"},
+                                                          style={"fontWeight":700,"fontSize":"12px","color":"#64748B","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle"}),
+                                        html.Td(html.Span("", id={"type":"budget-pct-inc","ch":"IPA - TCE"}, style={"fontSize":"12px","color":"#64748B"}),
+                                                style={"textAlign":"right","verticalAlign":"middle"}),
+                                        html.Td(html.Span("", id={"type":"inc-revenue","ch":"IPA - TCE"},
+                                                          style={"fontWeight":700,"color":"#4EAE46","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(78,174,70,0.06)"}),
+                                        html.Td(html.Span("", id={"type":"inc-roi","ch":"IPA - TCE"},
+                                                          style={"color":"#4EAE46","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(78,174,70,0.06)"}),
+                                    ]),
+                                    html.Tr([
+                                        html.Td(html.Span("Sponsorships", style={"paddingLeft":"20px","fontSize":"13px"}),
+                                                style={"textAlign":"left","verticalAlign":"middle"}),
+                                        html.Td(
+                                            html.Div(dbc.Switch(id={"type":"inc-include","ch":"Sponsorships"}, value=True),
+                                                     style={"display":"flex","justifyContent":"center","alignItems":"center"}),
+                                            style={"textAlign":"center","verticalAlign":"middle"},
+                                        ),
+                                        html.Td(html.Span(format_currency(float(INCREMENTAL_CHANNELS["Sponsorships"]["historical_spend"])),
+                                                          style={"fontSize":"12px","color":"#64748B","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle"}),
+                                        html.Td(
+                                            html.Div([
+                                        html.Button("−", id={"type":"inc-minus","ch":"Sponsorships"}, n_clicks=0, style={"width":"22px","height":"28px","flexShrink":0,"border":"1px solid #ced4da","borderRight":"none","borderRadius":"4px 0 0 4px","background":"#f8f9fa","cursor":"pointer","fontSize":"14px","lineHeight":"1","padding":"0"}),
+                                                dcc.Input(id={"type":"inc-spend","ch":"Sponsorships"}, type="text", debounce=True,
+                                                          value=format_currency(float(INCREMENTAL_CHANNELS["Sponsorships"]["historical_spend"])),
+                                                          style={"flex":"1","textAlign":"right","minWidth":"80px",
+                                                                 "border":"1px solid #ced4da","borderRadius":"0",
+                                                                 "height":"28px","padding":"0 4px","fontSize":"12px"}),
+                                        html.Button("+", id={"type":"inc-plus","ch":"Sponsorships"}, n_clicks=0, style={"width":"22px","height":"28px","flexShrink":0,"border":"1px solid #ced4da","borderLeft":"none","borderRadius":"0 4px 4px 0","background":"#f8f9fa","cursor":"pointer","fontSize":"14px","lineHeight":"1","padding":"0"}),
+                                            ], style={"display":"flex","alignItems":"center"}),
+                                            style={"textAlign":"right","verticalAlign":"middle"},
+                                        ),
+                                        html.Td(html.Span("0.0%", id={"type":"inc-delta","ch":"Sponsorships"},
+                                                          style={"fontWeight":700,"fontSize":"12px","color":"#64748B","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle"}),
+                                        html.Td(html.Span("", id={"type":"budget-pct-inc","ch":"Sponsorships"}, style={"fontSize":"12px","color":"#64748B"}),
+                                                style={"textAlign":"right","verticalAlign":"middle"}),
+                                        html.Td(html.Span("", id={"type":"inc-revenue","ch":"Sponsorships"},
+                                                          style={"fontWeight":700,"color":"#4EAE46","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(78,174,70,0.06)"}),
+                                        html.Td(html.Span("", id={"type":"inc-roi","ch":"Sponsorships"},
+                                                          style={"color":"#4EAE46","fontVariantNumeric":"tabular-nums"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(78,174,70,0.06)"}),
+                                    ]),
+                                ] +
+                                # Media (MMM) row
+                                [
+                                    html.Tr([
+                                        html.Td(html.Strong("Media (MMM)"), style={"textAlign":"left","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td("",                          style={"textAlign":"center","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td(html.Span(format_currency(_MEDIA_DEFAULT), style={"fontWeight":700,"fontSize":"13px","color":"#64748B"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td(html.Span(format_currency(_MEDIA_DEFAULT), id="budget-media-display", style={"fontWeight":700,"fontSize":"13px"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td(html.Span("0.0%", id="budget-media-delta", style={"fontWeight":700,"fontSize":"12px","color":"#64748B"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td(html.Span("", id="budget-pct-media", style={"fontSize":"12px","color":"#64748B"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td(html.Span("—", id="budget-media-revenue-display", style={"fontWeight":700,"fontSize":"13px","color":"#4EAE46"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                        html.Td(html.Span("—", id="budget-media-roi-display", style={"fontWeight":700,"fontSize":"13px","color":"#4EAE46"}),
+                                                style={"textAlign":"right","verticalAlign":"middle","background":"rgba(14,41,97,0.04)"}),
+                                    ]),
+                                ]
+                            ),
+                        ],
+                        bordered=True, size="sm", className="mt-0",
+                    ),
+                    html.Div(id="budget-hierarchy-msg", className="mt-2"),
+                ]),
+
+                # Derived totals summary strip
+                html.Div([
+                    html.Span("Total Non-MMM:", style={"fontSize": "12px", "fontWeight": 700, "color": "#374151"}),
+                    html.Span("", id="nonmmm-total-display",
+                              style={"fontSize": "13px", "fontWeight": 900, "color": "#0E2961",
+                                     "marginLeft": "6px", "fontVariantNumeric": "tabular-nums"}),
+                    html.Span(style={"width": "1px", "height": "16px", "background": "#cbd5e1",
+                                     "margin": "0 14px", "display": "inline-block", "verticalAlign": "middle"}),
+                    html.Span("Total Marketing Budget:", style={"fontSize": "12px", "fontWeight": 700, "color": "#374151"}),
+                    html.Span("", id="total-mktg-display",
+                              style={"fontSize": "13px", "fontWeight": 900, "color": "#0E2961",
+                                     "marginLeft": "6px", "fontVariantNumeric": "tabular-nums"}),
+                ], style={"display": "flex", "alignItems": "center", "padding": "8px 2px 2px 2px"}),
+
+                # Stubs kept for callback compatibility
+                html.Div(id="mmm-budget-display", style={"display": "none"}),
+                html.Div(id="budget-comparison", style={"display": "none"}),
+            ],
+        ),
+
+
+        # =================================================
+        # 3. CHANNEL BUDGET PLANNING
+        # =================================================
+        html.Div(
+            className="section",
+            children=[
+                html.Div("3. CHANNEL BUDGET PLANNING", className="section-title"),
                 html.Div(
-                    id="budget-section-description",
+                    "Adjust budgets for each channel and see the expected impact on revenue. Freeze channels to keep their budgets fixed while optimizing the rest.",
                     className="comment",
                 ),
 
-                # ---------- TOTAL BUDGET (HIDDEN IN SIMULATION) ----------
+                # ---------- MMM BUDGET CONTROL ----------
                 html.Div(
                     id="total-budget-block",
                     children=[
-                        # hidden stubs — kept for callbacks
                         html.Div(
                             dcc.Input(id="budget-pct", type="number", value=0, step=1, style={"display": "none"}),
                             id="budget-pct-col",
                             style={"display": "none"},
                         ),
-
                         html.Label(
-                            "Total Marketing Budget (USD)",
+                            "MMM Budget (USD)",
                             id="total-target-label",
                             style={"fontSize": "12px", "fontWeight": 700, "display": "block", "marginBottom": "6px"},
                         ),
-                        # Inline: [−][Input][+]  ←→  Slider
                         html.Div(
                             [
                                 html.Div(
                                     [
                                         html.Button(
                                             "−", id="budget-minus", n_clicks=0,
-                                            style={
-                                                "width": "34px", "height": "36px", "flexShrink": 0,
-                                                "border": "1px solid #ced4da", "borderRight": "none",
-                                                "borderRadius": "4px 0 0 4px", "background": "#f8f9fa",
-                                                "cursor": "pointer", "fontSize": "18px", "lineHeight": "1",
-                                            },
+                                            style={"width": "34px", "height": "36px", "flexShrink": 0,
+                                                   "border": "1px solid #ced4da", "borderRight": "none",
+                                                   "borderRadius": "4px 0 0 4px", "background": "#f8f9fa",
+                                                   "cursor": "pointer", "fontSize": "18px", "lineHeight": "1"},
                                         ),
                                         dcc.Input(
                                             id="total-target",
                                             type="text",
                                             debounce=True,
-                                            value=format_currency(data.get("total_target", 0)),
-                                            placeholder="e.g., 2,500,000",
-                                            style={
-                                                "width": "160px", "height": "36px", "flexShrink": 0,
-                                                "border": "1px solid #ced4da", "borderRadius": "0",
-                                                "padding": "4px 8px", "textAlign": "right",
-                                            },
+                                            value=format_currency(_MEDIA_DEFAULT),
+                                            placeholder="e.g., 14,267,487",
+                                            style={"width": "160px", "height": "36px", "flexShrink": 0,
+                                                   "border": "1px solid #ced4da", "borderRadius": "0",
+                                                   "padding": "4px 8px", "textAlign": "right"},
                                         ),
                                         html.Button(
                                             "+", id="budget-plus", n_clicks=0,
-                                            style={
-                                                "width": "34px", "height": "36px", "flexShrink": 0,
-                                                "border": "1px solid #ced4da", "borderLeft": "none",
-                                                "borderRadius": "0 4px 4px 0", "background": "#f8f9fa",
-                                                "cursor": "pointer", "fontSize": "18px", "lineHeight": "1",
-                                            },
+                                            style={"width": "34px", "height": "36px", "flexShrink": 0,
+                                                   "border": "1px solid #ced4da", "borderLeft": "none",
+                                                   "borderRadius": "0 4px 4px 0", "background": "#f8f9fa",
+                                                   "cursor": "pointer", "fontSize": "18px", "lineHeight": "1"},
                                         ),
                                     ],
                                     style={"display": "flex", "alignItems": "center", "flexShrink": 0},
@@ -1217,136 +1412,67 @@ app.layout = html.Div(
                             ],
                             style={"display": "flex", "alignItems": "center", "flexWrap": "wrap"},
                         ),
+                        html.Div(id="scale-warning", style={"marginTop": "8px"}),
                         html.Hr(style={"margin": "14px 0 10px 0", "borderColor": "#e5e7eb"}),
                     ],
-                ),
-
-                # ---------- TWO-COLUMN: SCENARIO TABLE (left) + BUDGET SUMMARY (right) ----------
-                html.Div(
-                    id="scenario-block",
-                    className="subsection",
-                    children=[
-                        html.Div(
-                            "Incremental / Scenario Channels (Not Optimized)",
-                            className="section-subtitle",
-                        ),
-                        html.Div(
-                            "Scenario-only channels. These investments are simulated linearly "
-                            "and applied on top of MMM results.",
-                            className="comment",
-                            style={"fontSize": "11px"},
-                        ),
-                    ],
-                ),
-                dbc.Row(
-                    [
-                        # Left column — table
-                        dbc.Col(
-                            [
-                                html.Div(
-                                    dbc.Table(
-                                        [
-                                            html.Thead(
-                                                html.Tr(
-                                                    [
-                                                        html.Th("Channel", style={"textAlign": "left"}),
-                                                        html.Th("Include", style={"textAlign": "center"}),
-                                                        html.Th(
-                                                            "Scenario Investment (USD)",
-                                                            style={"textAlign": "right"},
-                                                        ),
-                                                    ]
-                                                )
-                                            ),
-                                            html.Tbody(incremental_channel_rows()),
-                                        ],
-                                        bordered=False,
-                                        size="sm",
-                                        className="mt-2",
-                                    ),
-                                    style={
-                                        "backgroundColor": "rgba(100,116,139,0.04)",
-                                        "border": "1px dashed #cbd5e1",
-                                        "borderRadius": "6px",
-                                        "padding": "6px 8px",
-                                    },
-                                ),
-                                html.Div(
-                                    "Tip: These channels are scenario levers and are never optimized.",
-                                    className="comment",
-                                    style={"fontSize": "10.5px", "marginTop": "6px"},
-                                ),
-                            ],
-                            md=8,
-                            style={"paddingRight": "16px"},
-                        ),
-
-                        # Right column — Unified Budget Summary panel
-                        dbc.Col(
-                            html.Div(
-                                id="mmm-budget-display",
-                                style={"display": "none"},
-                            ),
-                            md=4,
-                        ),
-                    ],
-                    className="g-0 mt-1",
-                    align="start",
-                ),
-
-                # hidden stub — kept for callback compatibility
-                html.Div(id="budget-comparison", style={"display": "none"}),
-            ],
-        ),
-
-        # =================================================
-        # 3. CHANNEL INVESTMENT SETTINGS
-        # =================================================
-        html.Div(
-            className="section",
-            children=[
-                html.Div("3. CHANNEL INVESTMENT SETTINGS", className="section-title"),
-                html.Div(
-                    "Set bounds when optimizing, or simulate spend changes by channel.",
-                    className="comment",
                 ),
 
                 # ---------- OPTIMIZE ----------
                 html.Div(
                     id="bounds-table-optimize",
                     children=[
-                        dbc.Row(
+                        # ── Above-table row: MMM totals (left) + Global bounds (right) ──
+                        html.Div(
                             [
-                                dbc.Col(
+                                # LEFT: live MMM totals
+                                html.Div(
                                     [
-                                        html.Label("Global Lower Bound %", style={"fontSize": "12px", "fontWeight": 700, "display": "block", "marginBottom": "4px"}),
-                                        dcc.Input(id="global-lb", type="number", value=-20, style={"width": "100%", "textAlign": "center"}),
+                                        html.Span("MMM Spend: ", style={"fontWeight": 700, "fontSize": "13px", "color": UI_MUTED}),
+                                        html.Span(
+                                            fmt_money_full(sum(base_investment.values())),
+                                            id="mmm-spend-header",
+                                            style={"fontWeight": 900, "fontSize": "13px", "color": NAVY_PRIMARY},
+                                        ),
+                                        html.Span("  |  ", style={"color": UI_MUTED, "margin": "0 8px", "fontWeight": 400}),
+                                        html.Span("MMM Revenue: ", style={"fontWeight": 700, "fontSize": "13px", "color": UI_MUTED}),
+                                        html.Span(
+                                            fmt_money_full(sum(compute_response_for_spend(ch, base_investment[ch]) for ch in channels)),
+                                            id="mmm-revenue-header",
+                                            style={"fontWeight": 900, "fontSize": "13px", "color": GREEN_POSITIVE},
+                                        ),
                                     ],
-                                    md=3,
+                                    style={"display": "flex", "alignItems": "center", "flexWrap": "wrap", "gap": "2px"},
                                 ),
-                                dbc.Col(
+                                # RIGHT: global bounds controls
+                                html.Div(
                                     [
-                                        html.Label("Global Upper Bound %", style={"fontSize": "12px", "fontWeight": 700, "display": "block", "marginBottom": "4px"}),
-                                        dcc.Input(id="global-ub", type="number", value=20, style={"width": "100%", "textAlign": "center"}),
+                                        html.Div(
+                                            [
+                                                html.Label("LB %", style={"fontSize": "11px", "fontWeight": 700, "marginBottom": "3px", "display": "block", "color": UI_MUTED, "textAlign": "center"}),
+                                                dcc.Input(id="global-lb", type="number", value=-20, style={"width": "68px", "textAlign": "center"}),
+                                            ],
+                                        ),
+                                        html.Div(
+                                            [
+                                                html.Label("UB %", style={"fontSize": "11px", "fontWeight": 700, "marginBottom": "3px", "display": "block", "color": UI_MUTED, "textAlign": "center"}),
+                                                dcc.Input(id="global-ub", type="number", value=20, style={"width": "68px", "textAlign": "center"}),
+                                            ],
+                                        ),
+                                        dbc.Button(
+                                            "APPLY BOUNDS",
+                                            id="apply-global-bounds",
+                                            color="secondary",
+                                            className="btn-secondary",
+                                            style={"height": "38px", "alignSelf": "flex-end", "whiteSpace": "nowrap", "fontSize": "11px"},
+                                        ),
                                     ],
-                                    md=3,
-                                ),
-                                dbc.Col(
-                                    dbc.Button(
-                                        "APPLY GLOBAL BOUNDS",
-                                        id="apply-global-bounds",
-                                        color="secondary",
-                                        className="btn-secondary",
-                                        style={"height": "38px", "width": "100%"},
-                                    ),
-                                    md=4,
-                                    className="d-flex align-items-end",
+                                    style={"display": "flex", "gap": "8px", "alignItems": "flex-end"},
                                 ),
                             ],
-                            className="g-2 mt-1",
+                            style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "8px", "flexWrap": "wrap", "gap": "8px"},
                         ),
 
-                        html.Div(id="global-bounds-msg", className="mt-2"),
+                        html.Div(id="global-bounds-msg"),
 
                         dbc.Table(
                             [
@@ -1355,12 +1481,12 @@ app.layout = html.Div(
                                         [
                                             html.Th("Channel", style={"textAlign": "left"}),
                                             html.Th("Include", style={"textAlign": "center"}),
-                                            html.Th("Lock", style={"textAlign": "center"}),
-                                            html.Th("Current Investment (USD)", style={"textAlign": "right"}),
-                                            html.Th("Lower Bound %", style={"textAlign": "center"}),
-                                            html.Th("Upper Bound %", style={"textAlign": "center"}),
-                                            html.Th("Min Investment (USD)", style={"textAlign": "right"}),
-                                            html.Th("Max Investment (USD)", style={"textAlign": "right"}),
+                                            html.Th("Freeze", style={"textAlign": "center"}, title="Freezes this channel's budget during optimization"),
+                                            html.Th("Budget ($)", style={"textAlign": "right"}),
+                                            html.Th("Expected Revenue ($) ↻", style={"textAlign": "right", "color": GREEN_POSITIVE, "whiteSpace": "nowrap"}),
+                                            html.Th("ROAS ↻", style={"textAlign": "right", "color": GREEN_POSITIVE}),
+                                            html.Th("Lower Bound (%)", style={"textAlign": "center"}),
+                                            html.Th("Upper Bound (%)", style={"textAlign": "center"}),
                                         ]
                                     )
                                 ),
@@ -1371,53 +1497,29 @@ app.layout = html.Div(
                             className="mt-2",
                         ),
 
+                        # Bottom totals — confirmation row
                         html.Div(
-                            f"Total current investment: {fmt_money_full(sum(base_investment.values()))}",
-                            style={
-                                "textAlign": "right",
-                                "fontSize": "12px",
-                                "fontWeight": 700,
-                                "color": NAVY_PRIMARY,
-                                "marginTop": "4px",
-                            },
+                            [
+                                html.Span("Total Spend: ", style={"fontWeight": 700, "fontSize": "12px", "color": UI_MUTED}),
+                                html.Span(
+                                    fmt_money_full(sum(base_investment.values())),
+                                    id="live-total-spend",
+                                    style={"fontWeight": 800, "fontSize": "12px", "color": NAVY_PRIMARY, "marginRight": "20px"},
+                                ),
+                                html.Span("Total Revenue: ", style={"fontWeight": 700, "fontSize": "12px", "color": UI_MUTED}),
+                                html.Span(
+                                    fmt_money_full(sum(compute_response_for_spend(ch, base_investment[ch]) for ch in channels)),
+                                    id="live-total-revenue",
+                                    style={"fontWeight": 800, "fontSize": "12px", "color": GREEN_POSITIVE},
+                                ),
+                            ],
+                            style={"textAlign": "right", "marginTop": "6px"},
                         ),
 
                         html.Div(id="bounds-feasibility", className="mt-2"),
                     ],
                 ),
 
-                # ---------- SIMULATE ----------
-                html.Div(
-                    id="bounds-table-simulate",
-                    style={"display": "none"},
-                    children=[
-                        html.Div(
-                            "Simulate % changes to current spend. No optimization or bounds are applied.",
-                            className="comment",
-                            style={"fontSize": "11px"},
-                        ),
-                        dbc.Table(
-                            [
-                                html.Thead(
-                                    html.Tr(
-                                        [
-                                            html.Th("Channel", style={"textAlign": "left"}),
-                                            html.Th("Include", style={"textAlign": "center"}),
-                                            html.Th("Current Investment", style={"textAlign": "right"}),
-                                            html.Th("Simulation Shift %", style={"textAlign": "center"}),
-                                            html.Th("New Investment", style={"textAlign": "right"}),
-                                            html.Th("Δ Investment", style={"textAlign": "right"}),
-                                        ]
-                                    )
-                                ),
-                                html.Tbody(channel_rows_simulate()),
-                            ],
-                            bordered=True,
-                            size="sm",
-                            className="mt-2",
-                        ),
-                    ],
-                ),
 
             ],
         ),
@@ -1558,40 +1660,19 @@ app.layout = html.Div(
 
 @app.callback(
     Output("budget-section-description", "children"),
-    Input("run-mode", "value"),
     Input("goal", "value"),
 )
-def update_budget_description(run_mode, goal):
-
-    if run_mode == "simulate":
-        return (
-            "Simulation mode: adjust MMM and scenario channel spends to explore outcomes. "
-            "No optimization or total budget constraints are applied."
-        )
-
+def update_budget_description(goal):
     if (goal or "").lower() == "backward":
         return (
             "Define the target total revenue or response level. "
             "The model will minimize total investment while meeting this target."
         )
-
     return (
         "Define the total marketing budget and allocate any scenario / incremental investments. "
         "The remaining budget will be used for MMM optimization."
     )
 
-
-@app.callback(
-    Output("total-budget-block", "style"),
-    Input("run-mode", "value"),
-)
-def toggle_total_budget(run_mode):
-
-    # 🚫 Simulation → no total budget
-    if run_mode == "simulate":
-        return {"display": "none"}
-
-    return {"display": "block"}
 
 # Callback to enable/disable spend input
 @app.callback(
@@ -1627,7 +1708,7 @@ def toggle_incremental_spend_inputs(include_vals, spend_vals):
     prevent_initial_call="initial_duplicate",
 )
 def update_total_target_label(goal, current_value):
-    default_spend    = format_currency(data.get("total_target", 0))
+    default_spend    = format_currency(_MEDIA_DEFAULT)
     default_response = format_currency(
         sum(data["constant"])
         + sum(
@@ -1651,15 +1732,15 @@ def update_total_target_label(goal, current_value):
             default_response,
         )
     return (
-        "Total Marketing Budget (USD)",
-        "e.g., 2,500,000",
+        "MMM Budget (USD)",
+        "e.g., 14,267,487",
         default_spend,
     )
 
 # =================================================
 # Budget % ↔ USD sync (forward mode only)
 # =================================================
-_BASE_SPEND = float(sum(data["spends"].values()))
+_BASE_SPEND = _MEDIA_DEFAULT
 
 @app.callback(
     Output("total-target",  "value", allow_duplicate=True),
@@ -1736,20 +1817,6 @@ def toggle_budget_pct_col(goal):
     return {"display": "none"}
 
 
-@app.callback(
-    Output("scenario-block", "style"),
-    Input("run-mode", "value"),
-    Input("goal", "value"),
-)
-def toggle_incremental_channels(run_mode, goal):
-
-    # 🚫 Backward optimization → no scenarios
-    if run_mode == "optimize" and (goal or "").lower() == "backward":
-        return {"display": "none"}
-
-    # ✅ Show in BOTH optimize-forward and simulate
-    return {"display": "block"}
-
 
 @app.callback(
     Output("section-budget", "style"),
@@ -1759,7 +1826,7 @@ def toggle_budget_section(goal):
     return {"display": "block"}
 
 
-_ORIGINAL_MMM_BUDGET = float(data.get("total_target", 0))
+_ORIGINAL_MMM_BUDGET = _MEDIA_DEFAULT
 
 @app.callback(
     Output("mmm-budget-display",    "children"),
@@ -1767,205 +1834,29 @@ _ORIGINAL_MMM_BUDGET = float(data.get("total_target", 0))
     Output("budget-comparison",     "children"),
     Output("budget-comparison",     "style"),
     Output("sticky-bar-budget-info","children"),
-    Input("goal",       "value"),
-    Input("run-mode",   "value"),
+    Input("goal",         "value"),
     Input("total-target", "value"),
-    Input({"type": "inc-include", "ch": ALL}, "value"),
-    Input({"type": "inc-spend",   "ch": ALL}, "value"),
 )
-def update_remaining_mmm_budget(goal, run_mode, total_target, inc_include, inc_spend):
-
+def update_remaining_mmm_budget(goal, total_target):
     hidden = {"display": "none"}
 
-    # No budget logic in simulate OR backward mode
-    if run_mode == "simulate" or (goal or "").lower() == "backward":
+    if (goal or "").lower() == "backward":
         return None, None, None, hidden, None
 
-    total_budget = parse_currency(total_target) or 0.0
+    mmm_budget = parse_currency(total_target) or 0.0
 
-    incremental_total = 0.0
-    for include, spend in zip(inc_include, inc_spend):
-        if include and spend not in (None, ""):
-            v = parse_currency(spend)
-            if v is not None:
-                incremental_total += v
-
-    mmm_budget = total_budget - incremental_total
-    over_budget = incremental_total > total_budget
-
-    # Clamp to 0 for downstream budget-value usage
-    remaining = max(mmm_budget, 0.0)
-
-    def brow(label, value, label_style=None, value_style=None):
-        ls = {"textAlign": "left", "padding": "4px 16px 4px 0",
-              "color": "#374151", "whiteSpace": "nowrap", "fontSize": "13px"}
-        vs = {"textAlign": "right", "padding": "4px 0",
-              "fontWeight": 700, "whiteSpace": "nowrap", "fontSize": "13px"}
-        if label_style:
-            ls.update(label_style)
-        if value_style:
-            vs.update(value_style)
-        return html.Tr([html.Td(label, style=ls), html.Td(value, style=vs)])
-
-    breakdown_rows = [
-        brow(
-            "Total Budget:",
-            fmt_money_full(total_budget),
-            label_style={"fontWeight": 600},
-        ),
-        brow(
-            "− Incremental Channels:",
-            f"− {fmt_money_full(incremental_total)}" if incremental_total > 0 else fmt_money_full(0),
-            value_style={"color": "#dc2626" if incremental_total > 0 else "#374151"},
-        ),
-    ]
-
-    separator_row = html.Tr([
-        html.Td(
-            colSpan=2,
-            style={
-                "borderTop": "2px solid #94a3b8",
-                "padding": "2px 0",
-            },
-        )
-    ])
-
-    mmm_value_color = "#dc2626" if over_budget else "#16a34a"
-    mmm_label_style = {"fontWeight": 700, "color": "#1e293b", "fontSize": "13px"}
-    mmm_value_style = {"fontWeight": 700, "fontSize": "13px", "color": mmm_value_color}
-
-    breakdown_rows.append(separator_row)
-    breakdown_rows.append(
-        brow(
-            "MMM Optimization Budget:",
-            fmt_money_full(mmm_budget),
-            label_style=mmm_label_style,
-            value_style=mmm_value_style,
-        )
-    )
-
-    warning_block = html.Div(
-        "⚠ Incremental spend exceeds total budget",
-        style={
-            "color": "#dc2626", "fontWeight": 600, "fontSize": "12px",
-            "marginTop": "6px", "padding": "6px 10px",
-            "background": "#fef2f2", "border": "1px solid #fca5a5",
-            "borderRadius": "4px",
-        },
-    ) if over_budget else None
-
-    # Budget vs model baseline
-    orig = _ORIGINAL_MMM_BUDGET
-    delta = remaining - orig
+    orig      = _ORIGINAL_MMM_BUDGET
+    delta     = mmm_budget - orig
     delta_pct = (delta / orig * 100) if orig else 0.0
-    sign = "+" if delta >= 0 else ""
+    sign      = "+" if delta >= 0 else ""
     delta_color = "#16a34a" if delta >= 0 else "#dc2626"
 
-    def srow(label, value_el, label_extra=None, value_extra=None):
-        ls = {"textAlign": "left", "padding": "4px 12px 4px 0",
-              "color": "#374151", "whiteSpace": "nowrap", "fontSize": "12px"}
-        vs = {"textAlign": "right", "padding": "4px 0",
-              "fontWeight": 700, "whiteSpace": "nowrap", "fontSize": "12px"}
-        if label_extra:
-            ls.update(label_extra)
-        if value_extra:
-            vs.update(value_extra)
-        return html.Tr([html.Td(label, style=ls), html.Td(value_el, style=vs)])
-
-    unified_panel = html.Div(
-        [
-            # Panel title
-            html.Div("Budget Summary", style={
-                "fontSize": "11px", "fontWeight": 700, "color": "#6b7280",
-                "textTransform": "uppercase", "letterSpacing": "0.05em",
-                "marginBottom": "10px",
-            }),
-
-            # ── Section 1: Budget Breakdown ──
-            html.Div("Budget Breakdown", style={
-                "fontSize": "10px", "fontWeight": 700, "color": "#94a3b8",
-                "textTransform": "uppercase", "letterSpacing": "0.04em",
-                "marginBottom": "4px",
-            }),
-            html.Table(
-                [
-                    srow(
-                        "Total Budget:",
-                        fmt_money_full(total_budget),
-                        label_extra={"fontWeight": 600},
-                    ),
-                    srow(
-                        "− Incremental Channels:",
-                        f"− {fmt_money_full(incremental_total)}" if incremental_total > 0 else fmt_money_full(0),
-                        value_extra={"color": "#dc2626" if incremental_total > 0 else "#64748b"},
-                    ),
-                    # Separator row
-                    html.Tr([html.Td(
-                        colSpan=2,
-                        style={"borderTop": "2px solid #94a3b8", "padding": "2px 0"},
-                    )]),
-                    srow(
-                        "MMM Optimization Budget:",
-                        fmt_money_full(mmm_budget),
-                        label_extra={"fontWeight": 700, "color": "#1e293b"},
-                        value_extra={"color": "#dc2626" if over_budget else "#16a34a", "fontSize": "13px"},
-                    ),
-                ],
-                style={"borderCollapse": "collapse", "width": "100%"},
-            ),
-            # Over-budget warning
-            html.Div(
-                "⚠ Incremental spend exceeds total budget",
-                style={
-                    "color": "#dc2626", "fontWeight": 600, "fontSize": "11px",
-                    "marginTop": "5px", "padding": "5px 8px",
-                    "background": "#fef2f2", "border": "1px solid #fca5a5",
-                    "borderRadius": "4px",
-                },
-            ) if over_budget else None,
-
-            # Divider between sections
-            html.Hr(style={"margin": "10px 0", "borderColor": "#e2e8f0"}),
-
-            # ── Section 2: vs Model Baseline ──
-            html.Div("vs. Model Baseline", style={
-                "fontSize": "10px", "fontWeight": 700, "color": "#94a3b8",
-                "textTransform": "uppercase", "letterSpacing": "0.04em",
-                "marginBottom": "4px",
-            }),
-            html.Table(
-                [
-                    srow("Original MMM Budget:", html.Span(fmt_money_full(orig))),
-                    srow("Current MMM Budget:", html.Span(fmt_money_full(remaining))),
-                    srow(
-                        "Δ vs Model:",
-                        html.Span(
-                            f"{sign}{fmt_money_full(delta)}  ({sign}{delta_pct:.1f}%)",
-                            style={"color": delta_color},
-                        ),
-                    ),
-                ],
-                style={"borderCollapse": "collapse", "width": "100%"},
-            ),
-        ],
-        style={
-            "background": "#f8fafc",
-            "border": "1px solid #e2e8f0",
-            "borderRadius": "6px",
-            "padding": "12px 14px",
-        },
-    )
-
-    # Sticky bar left-side content
     sticky_info = html.Div(
         [
             html.Div(
                 [
                     html.Span("MMM Budget  ", className="sticky-bar-label"),
-                    html.Span(
-                        fmt_money_full(mmm_budget),
-                        className="sticky-bar-value" + (" sticky-bar-value--warn" if over_budget else ""),
-                    ),
+                    html.Span(fmt_money_full(mmm_budget), className="sticky-bar-value"),
                 ],
                 className="sticky-bar-stat",
             ),
@@ -1986,152 +1877,373 @@ def update_remaining_mmm_budget(goal, run_mode, total_target, inc_include, inc_s
     )
 
     return (
-        unified_panel,
-        remaining,
-        None,               # budget-comparison stub — no longer used
-        {"display": "none"},
+        None,       # mmm-budget-display hidden (Budget Summary removed)
+        mmm_budget, # passed directly to optimizer
+        None,
+        hidden,
         sticky_info,
     )
 
+# =================================================
+# Proportional MMM Channel Scaling
+# =================================================
 @app.callback(
-    Output("goal", "disabled"),
-    Input("run-mode", "value"),
+    Output({"type": "spend", "ch": ALL}, "value", allow_duplicate=True),
+    Output("scale-warning", "children"),
+    Input("total-target", "value"),
+    State({"type": "spend",   "ch": ALL}, "value"),
+    State({"type": "lock",    "ch": ALL}, "value"),
+    State({"type": "include", "ch": ALL}, "value"),
+    prevent_initial_call=True,
 )
-def disable_goal_in_simulation(run_mode):
-    return run_mode == "simulate"
+def scale_mmm_channels(total_target, spend_vals, lock_vals, include_vals):
+    new_total = parse_currency(total_target)
+    if new_total is None or new_total <= 0:
+        raise PreventUpdate
 
+    # Parse current spends (fall back to base_investment if blank/invalid)
+    spends = []
+    for ch, sv in zip(channels, spend_vals):
+        v = parse_currency(sv) if sv else None
+        spends.append(v if (v is not None and v > 0) else base_investment[ch])
 
-@app.callback(
-    Output("run", "children"),
-    Output("run", "disabled"),
-    Input("run-mode", "value"),
-)
-def update_run_label(run_mode):
-    if run_mode == "simulate":
-        return "SIMULATION MODE", True
-    return "RUN OPTIMIZATION", False
+    # Only consider included channels for budget math
+    inc_mask  = [bool(inc) for inc in include_vals]
+    lock_mask = [bool(lk) and bool(inc) for lk, inc in zip(lock_vals, include_vals)]
+
+    old_total    = sum(s for s, inc in zip(spends, inc_mask) if inc)
+    frozen_total = sum(s for s, fz  in zip(spends, lock_mask) if fz)
+    adj_total    = old_total - frozen_total   # budget held by non-frozen included chs
+
+    if old_total <= 0:
+        raise PreventUpdate
+
+    remaining = new_total - frozen_total
+
+    # ── Edge cases ──────────────────────────────────────────────────────────
+    warn_style = {"fontWeight": 600, "fontSize": "12px",
+                  "padding": "5px 10px", "borderRadius": "4px", "marginBottom": "6px"}
+
+    if remaining < 0:
+        return no_update, html.Div(
+            "⚠ Frozen channels exceed total MMM budget. Unfreeze channels or increase the budget.",
+            style={**warn_style, "color": "#dc2626",
+                   "background": "#fef2f2", "border": "1px solid #fca5a5"},
+        )
+
+    if adj_total <= 0:
+        return no_update, html.Div(
+            "⚠ All channels are frozen. Cannot adjust to new MMM budget.",
+            style={**warn_style, "color": "#92400e",
+                   "background": "#fffbeb", "border": "1px solid #fcd34d"},
+        )
+
+    # ── Scale non-frozen included channels ──────────────────────────────────
+    scale = remaining / adj_total
+    adj_indices = [i for i, (inc, fz) in enumerate(zip(inc_mask, lock_mask))
+                   if inc and not fz]
+
+    new_spends = list(spend_vals)
+    rounded_vals = {}
+    for i in adj_indices:
+        rounded_vals[i] = round(spends[i] * scale)
+        new_spends[i] = format_currency(rounded_vals[i])
+
+    # Rounding correction: absorb any cent-level drift into the last channel
+    actual_adj = sum(rounded_vals[i] for i in adj_indices)
+    diff = round(new_total) - round(frozen_total) - actual_adj
+    if diff != 0 and adj_indices:
+        last = adj_indices[-1]
+        corrected = rounded_vals[last] + diff
+        new_spends[last] = format_currency(max(corrected, 0))
+
+    return new_spends, None
 
 
 # =================================================
-# Sync LB/UB ↔ Min/Max + Apply Global Bounds
+# Hierarchical Budget Validation + Revenue / ROI + Deltas
+# =================================================
+@app.callback(
+    Output("budget-d2c-display",   "children"),
+    Output("budget-ipa-display",   "children"),
+    Output("budget-media-display", "children"),
+    Output("budget-pct-d2c",       "children"),
+    Output("budget-pct-ipa",       "children"),
+    Output("budget-pct-media",     "children"),
+    Output({"type": "budget-pct-inc", "ch": ALL}, "children"),
+    Output("budget-d2c-revenue",   "children"),
+    Output("budget-d2c-roi",       "children"),
+    Output("budget-ipa-revenue",   "children"),
+    Output("budget-ipa-roi",       "children"),
+    Output({"type": "inc-revenue", "ch": ALL}, "children"),
+    Output({"type": "inc-roi",     "ch": ALL}, "children"),
+    Output("budget-hierarchy-msg", "children"),
+    Output("budget-d2c-delta",     "children"),
+    Output("budget-ipa-delta",     "children"),
+    Output("budget-media-delta",   "children"),
+    Output({"type": "inc-delta",   "ch": ALL}, "children"),
+    Output("nonmmm-total-display", "children"),
+    Output("total-mktg-display",   "children"),
+    Input({"type": "inc-spend",   "ch": ALL}, "value"),
+    Input({"type": "inc-include", "ch": ALL}, "value"),
+    Input("total-target", "value"),
+)
+def update_budget_hierarchy(inc_spend_vals, inc_include_vals, total_target):
+    # total-target is now the MMM budget directly (no longer derived)
+    mmm_budget = parse_currency(total_target) or 0.0
+    inc_chs = INC_DOM_ORDER  # DOM-order matches ALL callback arg order
+
+    d2c_spend = d2c_rev_cb = 0.0
+    ipa_spend = ipa_rev_cb = 0.0
+    pcts, revs, rois, ch_deltas = [], [], [], []
+
+    for ch, spend_str, include in zip(inc_chs, inc_spend_vals, inc_include_vals):
+        hist_s = float(INCREMENTAL_CHANNELS[ch]["historical_spend"])
+        hist_r = float(INCREMENTAL_CHANNELS[ch]["historical_revenue"])
+
+        spend = parse_currency(spend_str) if spend_str else hist_s
+        if spend is None or spend < 0:
+            spend = hist_s
+
+        # Linear revenue model: revenue scales proportionally with spend
+        rev = hist_r * (spend / hist_s) if hist_s > 0 else 0.0
+        roi = rev / spend if spend > 0 else 0.0
+
+        revs.append(fmt_money_short(rev) if rev > 0 else "—")
+        rois.append(f"{roi:.2f}" if roi > 0 else "—")
+
+        # delta vs baseline
+        delta_pct = (spend - hist_s) / hist_s * 100 if hist_s > 0 else 0.0
+        if abs(delta_pct) < 0.05:
+            d_color = "#64748B"
+            d_str   = "0.0%"
+        elif delta_pct > 0:
+            d_color = "#16a34a"
+            d_str   = f"+{delta_pct:.1f}%"
+        else:
+            d_color = "#dc2626"
+            d_str   = f"{delta_pct:.1f}%"
+        ch_deltas.append(html.Span(d_str, style={"color": d_color, "fontWeight": 700}))
+
+        if include:
+            if ch in D2C_CHANNELS:
+                d2c_spend += spend
+                d2c_rev_cb += rev
+            elif ch in IPA_CHANNELS:
+                ipa_spend += spend
+                ipa_rev_cb += rev
+
+    # MMM budget is independent — media row shows it directly
+    media = mmm_budget
+    nonmmm_total = d2c_spend + ipa_spend
+    grand_total  = nonmmm_total + mmm_budget
+
+    # % of Total uses grand_total (Non-MMM + MMM) as denominator
+    for ch, spend_str, include in zip(inc_chs, inc_spend_vals, inc_include_vals):
+        if include:
+            hist_s = float(INCREMENTAL_CHANNELS[ch]["historical_spend"])
+            spend  = parse_currency(spend_str) if spend_str else hist_s
+            if spend is None or spend < 0:
+                spend = hist_s
+            pcts.append(f"{spend / grand_total * 100:.1f}%" if grand_total > 0 else "")
+        else:
+            pcts.append("")
+
+    def pct_str(val, tot):
+        return f"{val / tot * 100:.1f}%" if tot > 0 else ""
+
+    def roi_str(rev, spend):
+        return f"{rev / spend:.2f}" if spend > 0 else "—"
+
+    def delta_span(new_val, baseline):
+        if baseline <= 0:
+            return html.Span("0.0%", style={"color": "#64748B", "fontWeight": 700})
+        dp = (new_val - baseline) / baseline * 100
+        if abs(dp) < 0.05:
+            return html.Span("0.0%", style={"color": "#64748B", "fontWeight": 700})
+        color = "#16a34a" if dp > 0 else "#dc2626"
+        s = f"+{dp:.1f}%" if dp > 0 else f"{dp:.1f}%"
+        return html.Span(s, style={"color": color, "fontWeight": 700})
+
+    return (
+        fmt_money_full(d2c_spend),
+        fmt_money_full(ipa_spend),
+        fmt_money_full(media),
+        pct_str(d2c_spend, grand_total),
+        pct_str(ipa_spend, grand_total),
+        pct_str(media, grand_total),
+        pcts,
+        fmt_money_short(d2c_rev_cb) if d2c_rev_cb > 0 else "—",
+        roi_str(d2c_rev_cb, d2c_spend),
+        fmt_money_short(ipa_rev_cb) if ipa_rev_cb > 0 else "—",
+        roi_str(ipa_rev_cb, ipa_spend),
+        revs,
+        rois,
+        None,   # budget-hierarchy-msg: no mismatch warning (budgets are independent)
+        delta_span(d2c_spend, _D2C_DEFAULT),
+        delta_span(ipa_spend, _IPA_DEFAULT),
+        delta_span(media, _MEDIA_DEFAULT),
+        ch_deltas,
+        fmt_money_full(nonmmm_total),
+        fmt_money_full(grand_total),
+    )
+
+
+# =================================================
+# +/- Quick Adjust for incremental channel spends
+# =================================================
+@app.callback(
+    Output({"type": "inc-spend", "ch": ALL}, "value", allow_duplicate=True),
+    Input({"type": "inc-plus",  "ch": ALL}, "n_clicks"),
+    Input({"type": "inc-minus", "ch": ALL}, "n_clicks"),
+    State({"type": "inc-spend", "ch": ALL}, "value"),
+    prevent_initial_call=True,
+)
+def adjust_inc_spend(plus_clicks, minus_clicks, spend_vals):
+    if not ctx.triggered_id:
+        raise PreventUpdate
+    triggered = ctx.triggered_id  # already a dict for pattern-matching IDs
+    t_type = triggered.get("type", "")
+    t_ch   = triggered.get("ch", "")
+    factor = 1.05 if t_type == "inc-plus" else 0.95
+
+    result = list(spend_vals)
+    for i, ch in enumerate(INC_DOM_ORDER):
+        if ch == t_ch:
+            cur = parse_currency(spend_vals[i]) if spend_vals[i] else None
+            if cur is None or cur <= 0:
+                cur = float(INCREMENTAL_CHANNELS[ch]["historical_spend"])
+            result[i] = format_currency(round(cur * factor))
+            break
+    return result
+
+
+# =================================================
+# Sync LB/UB -> minmax-display + Apply Global Bounds
 # =================================================
 @app.callback(
     Output({"type": "lb", "ch": ALL}, "value"),
     Output({"type": "ub", "ch": ALL}, "value"),
-    Output({"type": "min", "ch": ALL}, "value"),
-    Output({"type": "max", "ch": ALL}, "value"),
+    Output({"type": "minmax-display", "ch": ALL}, "children"),
     Output("global-bounds-msg", "children"),
     Input({"type": "lb", "ch": ALL}, "value"),
     Input({"type": "ub", "ch": ALL}, "value"),
-    Input({"type": "min", "ch": ALL}, "value"),
-    Input({"type": "max", "ch": ALL}, "value"),
     Input("apply-global-bounds", "n_clicks"),
     State("global-lb", "value"),
     State("global-ub", "value"),
 )
-def sync_bounds(lb_vals, ub_vals, min_vals, max_vals, n_apply, global_lb, global_ub):
+def sync_bounds(lb_vals, ub_vals, n_apply, global_lb, global_ub):
     trigger = ctx.triggered_id or {}
 
     if trigger == "apply-global-bounds":
         new_lb = [float(global_lb)] * len(channels) if global_lb is not None else [float(v) for v in lb_vals]
         new_ub = [float(global_ub)] * len(channels) if global_ub is not None else [float(v) for v in ub_vals]
-
-        new_min, new_max = [], []
+        displays = []
         for i, ch in enumerate(channels):
             base = base_investment[ch]
             min_v = base * (1 + new_lb[i] / 100)
             max_v = base * (1 + new_ub[i] / 100)
-            new_min.append(format_currency(min_v))
-            new_max.append(format_currency(max_v))
-
+            displays.append(f"Min: {fmt_money_short(min_v)}  Max: {fmt_money_short(max_v)}")
         msg = html.Div("Applied global bounds to all channels.", className="status-success")
-        return new_lb, new_ub, new_min, new_max, msg
+        return new_lb, new_ub, displays, msg
 
-    new_lb, new_ub, new_min, new_max = [], [], [], []
+    new_lb, new_ub, displays = [], [], []
     for i, ch in enumerate(channels):
         base = base_investment[ch]
         lb_raw = lb_vals[i]
         ub_raw = ub_vals[i]
-
         lb = float(lb_raw) if lb_raw not in [None, ""] else 0.0
         ub = float(ub_raw) if ub_raw not in [None, ""] else 0.0
-
-
-        min_v = parse_currency(min_vals[i])
-        max_v = parse_currency(max_vals[i])
-
-        if isinstance(trigger, dict) and trigger.get("type") == "min" and min_v is not None:
-            lb = (min_v / base - 1) * 100
-        elif isinstance(trigger, dict) and trigger.get("type") == "max" and max_v is not None:
-            ub = (max_v / base - 1) * 100
-
-        min_calc = base * (1 + lb / 100)
-        max_calc = base * (1 + ub / 100)
-
-
-
+        min_v = base * (1 + lb / 100)
+        max_v = base * (1 + ub / 100)
         new_lb.append(round(lb, 2))
         new_ub.append(round(ub, 2))
-        new_min.append(format_currency(min_calc))
-        new_max.append(format_currency(max_calc))
+        displays.append(f"Min: {fmt_money_short(min_v)}  Max: {fmt_money_short(max_v)}")
 
-    return new_lb, new_ub, new_min, new_max, None
+    return new_lb, new_ub, displays, None
+
+
+@app.callback(
+    Output({"type": "revenue", "ch": ALL}, "children"),
+    Output({"type": "roi", "ch": ALL}, "children"),
+    Output("live-total-spend", "children"),
+    Output("live-total-revenue", "children"),
+    Output("mmm-spend-header", "children"),
+    Output("mmm-revenue-header", "children"),
+    Output("budget-media-revenue-display", "children"),
+    Output("budget-media-roi-display", "children"),
+    Input({"type": "spend", "ch": ALL}, "value"),
+    Input({"type": "include", "ch": ALL}, "value"),
+)
+def update_live_revenue(spend_vals, include_vals):
+    revenues = []
+    rois = []
+    total_spend = 0.0
+    total_rev = 0.0
+
+    for ch, spend_str, include in zip(channels, spend_vals, include_vals):
+        spend = parse_currency(spend_str) if spend_str else base_investment[ch]
+        if spend is None or spend <= 0:
+            spend = base_investment[ch]
+
+        if not include:
+            revenues.append("—")
+            rois.append("—")
+            continue
+
+        rev = compute_response_for_spend(ch, spend)
+        roi = (rev / spend) if spend > 0 else 0.0
+
+        revenues.append(fmt_money_short(rev) if rev > 0 else "—")
+        rois.append(f"{roi:.2f}" if roi > 0 else "—")
+        total_spend += spend
+        total_rev += rev
+
+    total_fmt = fmt_money_full(total_spend)
+    rev_fmt = fmt_money_full(total_rev)
+    media_roi = f"{total_rev / total_spend:.2f}" if total_spend > 0 else "—"
+    return revenues, rois, total_fmt, rev_fmt, total_fmt, rev_fmt, fmt_money_short(total_rev) if total_rev > 0 else "—", media_roi
 
 @app.callback(
     Output("bounds-feasibility", "children"),
-    Input("run-mode", "value"),
     Input("goal", "value"),
     Input("mmm-budget-value", "data"),
-    Input({"type": "include", "ch": ALL}, "value"),   # ✅ ADD
-    Input({"type": "lock", "ch": ALL}, "value"),      # ✅ ADD
+    Input({"type": "include", "ch": ALL}, "value"),
+    Input({"type": "lock", "ch": ALL}, "value"),
+    Input({"type": "spend", "ch": ALL}, "value"),
     Input({"type": "lb", "ch": ALL}, "value"),
     Input({"type": "ub", "ch": ALL}, "value"),
 )
-def show_bounds_feasibility(run_mode, goal, mmm_budget, include_vals, lock_vals, lb_vals, ub_vals):
-
-    if run_mode == "simulate":
-        return None
-
-    # Bounds feasibility only applies to forward optimization
+def show_bounds_feasibility(goal, mmm_budget, include_vals, lock_vals, spend_vals, lb_vals, ub_vals):
     if (goal or "").lower() == "backward":
         return None
-
     if mmm_budget is None:
         raise PreventUpdate
-
     mmm_budget = float(mmm_budget)
-
     min_total = 0.0
     max_total = 0.0
-
-    for ch, include, lock, lb, ub in zip(
-        channels, include_vals, lock_vals, lb_vals, ub_vals
+    for ch, include, lock, spend_str, lb, ub in zip(
+        channels, include_vals, lock_vals, spend_vals, lb_vals, ub_vals
     ):
-        # ❌ Excluded channels do NOT count
         if not include:
             continue
-
-        base = base_investment[ch]
-
-        # 🔒 Locked → fixed spend
+        current_spend = parse_currency(spend_str) if spend_str else base_investment[ch]
+        if current_spend is None:
+            current_spend = base_investment[ch]
         if lock:
-            min_total += base
-            max_total += base
+            min_total += current_spend
+            max_total += current_spend
             continue
-
         lb = float(lb) if lb is not None else 0.0
         ub = float(ub) if ub is not None else 0.0
-
-        min_total += base * (1 + lb / 100)
-        max_total += base * (1 + ub / 100)
-
+        min_total += current_spend * (1 + lb / 100)
+        max_total += current_spend * (1 + ub / 100)
     if min_total <= mmm_budget <= max_total:
         return html.Div(
             f"Bounds feasible ✔  MMM budget {fmt_money_full(mmm_budget)} "
             f"is within [{fmt_money_full(min_total)} – {fmt_money_full(max_total)}]",
             className="status-success",
         )
-
     return html.Div(
         f"⚠ Budget outside bounds. Feasible range: "
         f"{fmt_money_full(min_total)} – {fmt_money_full(max_total)}. "
@@ -2147,7 +2259,6 @@ def show_bounds_feasibility(run_mode, goal, mmm_budget, include_vals, lock_vals,
 # Reset callback
 # =================================================
 @app.callback(
-    Output("run-mode",                        "value"),
     Output("goal",                            "value"),
     Output("total-target",                    "value",    allow_duplicate=True),
     Output("budget-pct",                      "value",    allow_duplicate=True),
@@ -2156,11 +2267,10 @@ def show_bounds_feasibility(run_mode, goal, mmm_budget, include_vals, lock_vals,
     Output("global-ub",                       "value"),
     Output({"type": "include",    "ch": ALL}, "value",    allow_duplicate=True),
     Output({"type": "lock",       "ch": ALL}, "value",    allow_duplicate=True),
+    Output({"type": "spend",      "ch": ALL}, "value",    allow_duplicate=True),
     Output({"type": "lb",         "ch": ALL}, "value",    allow_duplicate=True),
     Output({"type": "ub",         "ch": ALL}, "value",    allow_duplicate=True),
-    Output({"type": "min",        "ch": ALL}, "value",    allow_duplicate=True),
-    Output({"type": "max",        "ch": ALL}, "value",    allow_duplicate=True),
-    Output({"type": "tilt",       "ch": ALL}, "value",    allow_duplicate=True),
+    Output({"type": "minmax-display", "ch": ALL}, "children", allow_duplicate=True),
     Output({"type": "inc-include","ch": ALL}, "value",    allow_duplicate=True),
     Output({"type": "inc-spend",  "ch": ALL}, "value",    allow_duplicate=True),
     Output("optimizer-results",               "data",     allow_duplicate=True),
@@ -2174,28 +2284,29 @@ def reset_all(_):
     n_inc    = len(INCREMENTAL_CHANNELS)
     def_lb   = -20.0
     def_ub   = 20.0
-    def_mins = [format_currency(base_investment[ch] * (1 + def_lb / 100)) for ch in channels]
-    def_maxs = [format_currency(base_investment[ch] * (1 + def_ub / 100)) for ch in channels]
+    def_displays = [
+        f"Min: {fmt_money_short(base_investment[ch] * (1 + def_lb / 100))}  Max: {fmt_money_short(base_investment[ch] * (1 + def_ub / 100))}"
+        for ch in channels
+    ]
+    def_spends = [format_currency(base_investment[ch]) for ch in channels]
     return (
-        "optimize",
         "forward",
-        format_currency(data.get("total_target", 0)),
+        format_currency(_MEDIA_DEFAULT),
         0,
         0,
         def_lb,
         def_ub,
         [True]  * n_ch,
         [False] * n_ch,
+        def_spends,
         [def_lb] * n_ch,
         [def_ub] * n_ch,
-        def_mins,
-        def_maxs,
-        [0] * n_ch,
-        [False] * n_inc,   # inc-include → all off
-        [None]  * n_inc,   # inc-spend   → cleared
-        None,              # optimizer-results
-        None,              # msg
-        None,              # run-status
+        def_displays,
+        [True]  * n_inc,
+        [format_currency(float(INCREMENTAL_CHANNELS[ch]["historical_spend"])) for ch in INC_DOM_ORDER],
+        None,
+        None,
+        None,
     )
 
 
@@ -2207,54 +2318,37 @@ def reset_all(_):
     Input("run", "n_clicks"),
     State("goal", "value"),
     State("total-target", "value"),
-    State("run-mode", "value"),
     State({"type": "include", "ch": ALL}, "value"),
     State({"type": "lock", "ch": ALL}, "value"),
+    State({"type": "spend", "ch": ALL}, "value"),
     State({"type": "lb", "ch": ALL}, "value"),
     State({"type": "ub", "ch": ALL}, "value"),
-    State({"type": "inc-include", "ch": ALL}, "value"),   # ✅ ADD
-    State({"type": "inc-spend", "ch": ALL}, "value"),     # ✅ ADD
+    State({"type": "inc-include", "ch": ALL}, "value"),
+    State({"type": "inc-spend", "ch": ALL}, "value"),
     prevent_initial_call=True,
 )
-def run_optimizer(n_clicks, goal, total_target, run_mode, include_vals, lock_vals, lb_vals, ub_vals, inc_include_vals, inc_spend_vals, ):
-    if run_mode == "simulate":
-        return (
-            None,
-            html.Div(
-                "Simulation mode is active. Adjust sliders to explore spend changes. "
-                "No optimization or budget constraints are applied.",
-                className="status-info",
-            ),
-            True,
-            None,
-        )
-
+def run_optimizer(n_clicks, goal, total_target, include_vals, lock_vals, spend_vals, lb_vals, ub_vals, inc_include_vals, inc_spend_vals):
+    # Build editable spends dict
+    editable_spends = {}
+    for ch, spend_str in zip(channels, spend_vals):
+        parsed = parse_currency(spend_str) if spend_str else None
+        editable_spends[ch] = parsed if parsed is not None else base_investment[ch]
 
     total_target_val = parse_currency(total_target)
-    # --- NEW: total marketing budget logic ---
     total_marketing_budget = total_target_val or 0.0
 
     incremental_spends = {}
-    inc_channels = list(INCREMENTAL_CHANNELS.keys())
+    inc_channels = INC_DOM_ORDER
 
-    if goal == "backward":
-        incremental_spends = {}
+    if goal != "backward":
+        for i, ch in enumerate(inc_channels):
+            include = bool(inc_include_vals[i]) if inc_include_vals else False
+            spend_val = parse_currency(inc_spend_vals[i]) if inc_spend_vals else None
+            if include and spend_val is not None:
+                incremental_spends[ch] = float(spend_val)
 
-
-    for i, ch in enumerate(inc_channels):
-        include = bool(inc_include_vals[i]) if inc_include_vals else False
-        spend_val = parse_currency(inc_spend_vals[i]) if inc_spend_vals else None
-
-        if include and spend_val is not None:
-            incremental_spends[ch] = float(spend_val)
-
-    total_incremental = sum(incremental_spends.values())
-    if goal == "forward":
-        mmm_budget = max(total_marketing_budget - total_incremental, 0.0)
-    else:
-        mmm_budget = total_marketing_budget  # interpreted as response target
-
-
+    # total-target IS the MMM budget directly (D2C/IPA are independent)
+    mmm_budget = total_marketing_budget
 
     bounds = {}
     invalid_rows = []
@@ -2274,7 +2368,6 @@ def run_optimizer(n_clicks, goal, total_target, run_mode, include_vals, lock_val
 
         if lb > ub:
             invalid_rows.append(ch)
-
         bounds[ch] = [lb, ub]
 
     if invalid_rows:
@@ -2284,32 +2377,18 @@ def run_optimizer(n_clicks, goal, total_target, run_mode, include_vals, lock_val
         )
         err_status = html.Span("⚠ Invalid bounds", className="sticky-status sticky-status--error")
         return None, msg, True, err_status
-    
 
-    if run_mode == "optimize":
-        updated_data = update_data_from_ui(
-            data=data,
-            optimization_goal=goal,
-            total_target=mmm_budget,
-            channel_spends=base_investment,
-            bounds_dict=bounds,
-        )
-        updated_data["incremental_channels"] = INCREMENTAL_CHANNELS
-        updated_data["incremental_spends"] = incremental_spends
+    updated_data = update_data_from_ui(
+        data=data,
+        optimization_goal=goal,
+        total_target=mmm_budget,
+        channel_spends=editable_spends,
+        bounds_dict=bounds,
+    )
+    updated_data["incremental_channels"] = INCREMENTAL_CHANNELS
+    updated_data["incremental_spends"] = incremental_spends
 
-        out = run_optimizer_for_ui(updated_data)
-    else:
-        return (
-            None,
-            html.Div(
-                "Simulation mode is selected, but simulation logic is not enabled yet.",
-                className="status-warning",
-            ),
-            True,
-            None,
-        )
-
-
+    out = run_optimizer_for_ui(updated_data)
 
     if not out.success:
         err_status = html.Span("⚠ Optimization failed", className="sticky-status sticky-status--error")
@@ -2321,29 +2400,17 @@ def run_optimizer(n_clicks, goal, total_target, run_mode, include_vals, lock_val
         return None, html.Div("Optimization returned no results.", className="status-danger"), True, err_status
 
     df = results_df.copy()
-
     if "Channel" not in df.columns:
         df = df.reset_index().rename(columns={"index": "Channel"})
 
-
     k = compute_kpis(df)
     incr_pct = ((k["opt_rev"] / k["actual_rev"]) - 1) * 100 if k["actual_rev"] else 0.0
-    invest_delta = k["opt_spend"] - k["actual_spend"]
-
     invest_change_pct = ((k["opt_spend"] / k["actual_spend"]) - 1) * 100 if k["actual_spend"] else 0.0
-
-    # -----------------------------
-    # Build user message (CORRECT)
-    # -----------------------------
 
     if incremental_spends:
         overlay_spend = sum(incremental_spends.values())
-
-        # overlay revenue = optimized - MMM-only optimized
         overlay_df = df[df["Channel Type"] == "Incremental (Linear)"]
         overlay_rev = overlay_df["Optimized Response Metric"].sum()
-
-
         msg_text = (
             f"Scenario overlay applied: "
             f"+{fmt_money_short(overlay_rev)} revenue from "
@@ -2357,7 +2424,6 @@ def run_optimizer(n_clicks, goal, total_target, run_mode, include_vals, lock_val
             f"with {invest_change_pct:+.1f}% change in total investment. "
             f"ROAS {k['actual_roas']:.2f} → {k['opt_roas']:.2f}."
         )
-
 
     df["_ui_bounds"] = df["Channel"].map(bounds)
 
@@ -2528,23 +2594,6 @@ def render_kpis(results):
     )
 
 @app.callback(
-    Output({"type": "tilt", "ch": ALL}, "disabled"),
-    Input({"type": "sim-include", "ch": ALL}, "value"),
-    Input("run-mode", "value"),
-)
-def toggle_sim_sliders(includes, run_mode):
-
-    if not includes:
-        raise PreventUpdate
-
-    if run_mode != "simulate":
-        return [True] * len(includes)
-
-    return [not inc for inc in includes]
-
-
-
-@app.callback(
     Output("kpis", "children"),
     Input("optimizer-results", "data"),
 )
@@ -2588,17 +2637,6 @@ def render_kpi_cards(results):
             scenario_note,
         ]
     )
-
-@app.callback(
-    Output("bounds-table-optimize", "style"),
-    Output("bounds-table-simulate", "style"),
-    Input("run-mode", "value"),
-)
-def toggle_optimize_sim_tables(run_mode):
-    if run_mode == "simulate":
-        return {"display": "none"}, {"display": "block"}
-    return {"display": "block"}, {"display": "none"}
-
 
 @app.callback(
     Output("realloc-summary", "children"),
@@ -3107,11 +3145,10 @@ def download_results_csv(n, results):
 
 @app.callback(
     Output("mmm-budget-display", "style"),
-    Input("run-mode", "value"),
     Input("goal", "value"),
 )
-def toggle_mmm_budget_display(run_mode, goal):
-    if run_mode == "simulate" or (goal or "").lower() == "backward":
+def toggle_mmm_budget_display(goal):
+    if (goal or "").lower() == "backward":
         return {"display": "none"}
     return {"display": "block"}
 
